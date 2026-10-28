@@ -49,3 +49,20 @@ docker context ls                 # -> rancher-desktop (moby engine)
 - Go isn't installed. **Decision:** don't install it yet. We'll compile inside a Docker multi-stage build (the `golang` image provides the toolchain), which is how CI builds it anyway. We can `brew install go` later for fast local iteration.
 
 ---
+
+## Repo setup (2026-10-28)
+
+### What we did
+```sh
+git init -b main                              # new repo, default branch "main"
+git config user.name / user.email             # set for THIS repo only (no global identity existed)
+echo .DS_Store > .gitignore                   # keep macOS Finder junk out of the repo
+git add NOTES.md README.md .gitignore && git commit
+```
+
+### What broke / observations
+- No global git identity was configured, and git refuses to commit without one. Set it per-repo with `git config` (without `--global`).
+- `gh` (GitHub CLI) isn't installed, so pushing uses plain `git push` over HTTPS. GitHub needs a **personal access token** (or SSH key) for that, not your password.
+- The remote URL given was a template (`YOUR-USERNAME`), so the push waits for the real username.
+
+---
