@@ -64,5 +64,8 @@ git add NOTES.md README.md .gitignore && git commit
 - No global git identity was configured, and git refuses to commit without one. Set it per-repo with `git config` (without `--global`).
 - `gh` (GitHub CLI) isn't installed, so pushing uses plain `git push` over HTTPS. GitHub needs a **personal access token** (or SSH key) for that, not your password.
 - The remote URL given was a template (`YOUR-USERNAME`), so the push waits for the real username.
+- Added the remote: `git remote add origin https://github.com/joshuaGetachew/nhd-demo.git`. `git ls-remote origin` came back empty with no error, which means the repo exists and has no commits yet.
+- First `git push` failed: `could not read Username for 'https://github.com'`. No GitHub credentials are saved on this Mac yet, and there are no SSH keys.
+  **Fix:** run `git push -u origin main` once in your own terminal and enter your GitHub username plus a **personal access token** as the password. Git's `osxkeychain` credential helper saves it in the macOS Keychain, so later pushes don't ask again.
 
 ---
