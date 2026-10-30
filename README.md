@@ -16,7 +16,7 @@ A hands-on DevOps lab: a small Go web app running on a local Kubernetes cluster,
 | 1. Local Kubernetes cluster | Done |
 | 2. Go app with `/metrics` | Done |
 | 3. Containerize | Done |
-| 4. Deploy to Kubernetes | Not started |
+| 4. Deploy to Kubernetes | Done |
 | 5. Install Prometheus + Grafana | Not started |
 | 6. Scrape app metrics + dashboard | Not started |
 
@@ -48,6 +48,15 @@ curl localhost:8080/metrics
 cd app
 docker build -t nhd-demo:0.1.0 .
 docker run --rm -p 8080:8080 nhd-demo:0.1.0
+```
+
+## Deploy to Kubernetes
+
+```sh
+kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/
+kubectl -n nhd-demo get pods
+kubectl -n nhd-demo port-forward svc/nhd-demo 8090:80   # then: curl localhost:8090/
 ```
 
 ## Notes

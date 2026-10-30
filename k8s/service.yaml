@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: nhd-demo
+  namespace: nhd-demo
+  labels:
+    app: nhd-demo
+spec:
+  type: ClusterIP
+  selector:
+    app: nhd-demo
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

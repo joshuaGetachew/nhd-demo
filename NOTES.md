@@ -7,7 +7,7 @@ Goal: local Kubernetes cluster → small Go app → deploy as a pod → Promethe
 - [x] **Step 1** — Verify local Kubernetes cluster (Rancher Desktop)
 - [x] **Step 2** — Write a small Go web app with a `/metrics` endpoint
 - [x] **Step 3** — Containerize it (multi-stage Dockerfile)
-- [ ] **Step 4** — Deploy to Kubernetes (Deployment + Service)
+- [x] **Step 4** — Deploy to Kubernetes (Deployment + Service)
 - [ ] **Step 5** — Install Prometheus + Grafana (Helm, kube-prometheus-stack)
 - [ ] **Step 6** — Scrape the app's metrics and build a Grafana dashboard
 
@@ -159,5 +159,71 @@ docker rm -f nhd-demo-test
 ### What broke / observations
 - `docker exec nhd-demo-test sh` fails: `exec: "sh": executable file not found`. **Expected**: distroless has no shell. That's the security point. To debug a distroless pod, use `kubectl debug` to attach a temporary debug container, or build with the `:debug` tag variant, which includes busybox.
 - Image is built for **linux/arm64** (the Rancher Desktop VM on Apple Silicon). An x86 server would need `docker buildx build --platform linux/amd64`.
+
+---
+
+## Step 4 — Deploy to Kubernetes (2026-10-29)
+
+### What we did
+Wrote three manifests in `k8s/` and applied them:
+
+```sh
+kubectl apply -f k8s/namespace.yaml        # namespace first, so the others have somewhere to go
+kubectl apply -f k8s/
+kubectl -n nhd-demo rollout status deployment/nhd-demo
+kubectl -n nhd-demo get pods               # 3/3 Running, 1/1 Ready
+```
+
+| File | What it creates |
+|---|---|
+| `namespace.yaml` | Namespace `nhd-demo`: a folder that keeps our resources separate from `kube-system`. |
+| `deployment.yaml` | Deployment that keeps **3 replicas** of `nhd-demo:0.1.0` running. |
+| `service.yaml` | ClusterIP Service: one stable name/IP (`nhd-demo`, port 80) that load-balances to the pods' port 8080. |
+
+### Testing
+```sh
+# Load balancing, from a temporary pod inside the cluster:
+kubectl -n nhd-demo run curl-test --rm -i --restart=Never --image=curlimages/curl:8.11.1 \
+  --command -- sh -c 'for i in 1 2 3 4 5 6 7 8 9; do curl -s http://nhd-demo/; done'
+# -> "Hello from nhd-demo-7cbb7c5f95-4w72s / -zvfzb / -hdqvm": all 3 pods answer
+
+# From the Mac (tunnel through kubectl; Ctrl+C to stop):
+kubectl -n nhd-demo port-forward svc/nhd-demo 8090:80
+curl localhost:8090/
+
+# Self-healing:
+kubectl -n nhd-demo delete pod <one-pod-name>
+kubectl -n nhd-demo get pods               # a replacement appears within a second
+```
+
+### The Deployment, key fields
+| Field | Why |
+|---|---|
+| `replicas: 3` | Desired state. The Deployment (via a ReplicaSet) creates or deletes pods until there are exactly 3. |
+| `selector` / `labels: app: nhd-demo` | How the Deployment and Service find their pods. **Labels are the glue in Kubernetes**: the Service doesn't list pods, it selects anything with `app: nhd-demo`. |
+| `imagePullPolicy: Never` | Use the locally built image; don't try Docker Hub. Works because of the moby engine (Step 1). In real clusters you push to a registry and use `IfNotPresent`. |
+| `ports: name: http` | Named port. The probes and the Service refer to `http` instead of repeating 8080. |
+| `readinessProbe` → `/healthz` | Pod only gets traffic after it answers. Failing = removed from the Service, **not restarted**. |
+| `livenessProbe` → `/healthz` | Failing repeatedly = container is **restarted**. `initialDelaySeconds` avoids killing it while starting. |
+| `resources.requests` | What the scheduler reserves on a node (10m CPU = 1% of a core, 16Mi memory). |
+| `resources.limits.memory` | Hard cap. Over 64Mi → container is **OOMKilled**. No CPU limit on purpose: CPU limits cause throttling; the request is enough to share CPU fairly. |
+| `securityContext` | `runAsNonRoot`, numeric `runAsUser: 65532`, no privilege escalation, read-only root filesystem, all Linux capabilities dropped. Matches the "restricted" Pod Security Standard. |
+
+### The Service
+- `type: ClusterIP`: only reachable **inside** the cluster. Pods reach it by DNS name: `nhd-demo` (same namespace) or `nhd-demo.nhd-demo.svc.cluster.local` (full name, from anywhere). CoreDNS from Step 1 does this.
+- `port: 80` → `targetPort: http` (8080): clients use 80, the Service forwards to the container port.
+- Other types: **NodePort** (opens a port on every node), **LoadBalancer** (cloud load balancer; on k3s, the built-in ServiceLB). For HTTP from outside, you'd normally use an **Ingress** through Traefik.
+- `kubectl get endpointslices` shows which pod IPs the Service currently sends to. Only **Ready** pods are listed.
+
+### What broke / observations
+- **`CreateContainerConfigError`** on all 3 pods. `kubectl describe pod` → Events said:
+  `container has runAsNonRoot and image has non-numeric user (nonroot), cannot verify user is non-root`.
+  The Dockerfile sets `USER nonroot` (a *name*). Kubernetes can only verify a *numeric* UID is non-zero.
+  **Fix:** `runAsUser: 65532` / `runAsGroup: 65532` in the pod `securityContext` (65532 is distroless's nonroot UID). `kubectl apply` again did a **rolling update**: new pods came up, old ones were removed.
+  **Lesson:** when a pod is stuck, `kubectl describe pod` → **Events** at the bottom is the first place to look.
+- Load balancing isn't strict round-robin: kube-proxy picks a pod at random **per connection**. Over many requests it evens out.
+- `port-forward` tunnels to **one** pod, so it doesn't show load balancing. That's why the load-balancing test runs from inside the cluster.
+- Deleted pod showed **`Error`** while terminating. Kubernetes sends **SIGTERM** on shutdown; the app doesn't handle it, so Go exits with a non-zero code. Fix later: catch SIGTERM and call `srv.Shutdown()` to finish in-flight requests (**graceful shutdown**).
+- The `curl-test` pod printed `couldn't attach to pod ... falling back to streaming logs`. It finished too fast for `kubectl` to attach; the output still came through. Harmless.
 
 ---
