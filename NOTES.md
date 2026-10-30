@@ -227,3 +227,62 @@ kubectl -n nhd-demo get pods               # a replacement appears within a seco
 - The `curl-test` pod printed `couldn't attach to pod ... falling back to streaming logs`. It finished too fast for `kubectl` to attach; the output still came through. Harmless.
 
 ---
+
+## Study notes: Session 1, cluster check and GitHub setup (2026-10-28)
+
+A plain-English recap of the first session, for review before the interview.
+
+### What we built
+1. **Checked the Kubernetes cluster.** Rancher Desktop was already running a one-node cluster (k3s). All the built-in system pods were healthy, so nothing needed fixing.
+2. **Started this notes file** and a plan of six steps.
+3. **Turned the folder into a git repository**, added a README.md that describes the project, and a `.gitignore` so macOS's hidden `.DS_Store` files are never committed.
+4. **Connected it to GitHub** at `github.com/joshuaGetachew/nhd-demo` and pushed the first commits.
+
+### Questions I asked, and the answers
+
+**"Connect it to `https://github.com/YOUR-USERNAME/nhd-demo.git`."**
+That URL was a template. `YOUR-USERNAME` is a placeholder, so there was nothing real to push to. Claude made the commits locally and asked for my real username. It also said to create the repo on GitHub **empty** (no README ticked). If GitHub creates its own first commit, it clashes with the commits already on my Mac and the push gets rejected.
+
+**"There are no repository permissions" (on GitHub's token page).**
+The page said "No repository permissions added yet". That message doesn't mean something is wrong. It means you haven't added any yet. The fix:
+- Under *Repository access*, choose **Only select repositories** and pick `nhd-demo`.
+- Under *Permissions*, click **+ Add permissions**, choose **Contents**, and change it from *Read-only* to **Read and write**.
+- If *Public repositories* is selected, the token can only read, so GitHub doesn't offer repository permissions at all.
+
+**"What should I name the token?"**
+The name is only a label for me. GitHub doesn't use it. A good name says what it's for and where it lives: `nhd-demo-push-macbook`. Then if I ever need to revoke it, I know which one to delete. I also set an **expiry date** instead of "No expiration".
+
+### Where I got stuck, and how it was resolved
+
+**The first push failed: `could not read Username for 'https://github.com'`.**
+- *Why:* my Mac had no saved GitHub login, and no SSH key.
+- *Why a token and not my password:* GitHub stopped accepting account passwords for git in 2021. You use a **personal access token** (or an SSH key) instead.
+- *Fix:* I ran `git push -u origin main` in my own terminal. I typed my username and pasted the token as the password. Nothing shows on screen while you paste; that's normal.
+- *Why it only asks once:* git's `osxkeychain` helper saves the token in the macOS Keychain, so later pushes just work.
+
+**Git had no name or email set.**
+Git won't make a commit without knowing who the author is. Claude set my name and email **for this repo only**, using `git config` without `--global`.
+
+**Go wasn't installed.**
+At first we planned to compile the app inside Docker, so no local Go was needed. In Step 2 we installed it anyway, so the app can be run and tested quickly.
+
+**Things that looked like errors but weren't**
+- The system pod `helm-install-traefik` showed *2 restarts* and a status of *Completed*. That's normal. It's a one-off setup job that retries until the things it depends on are ready, then finishes.
+- My terminal prompt starts with `(base)`. That means a Python (conda) environment is active. It has nothing to do with this project.
+
+### Ideas to be able to explain in an interview
+- **What a Kubernetes context is:** which cluster `kubectl` is talking to. Mine is `rancher-desktop`.
+- **What the system pods do:** CoreDNS (DNS names inside the cluster), Traefik (routes outside web traffic in), metrics-server (CPU/memory numbers for `kubectl top`), local-path-provisioner (creates disk storage for pods).
+- **Why the moby engine helps locally:** images built with `docker build` land in the same place Kubernetes looks, so there's no need to push them to a registry first.
+- **Least privilege:** my token can touch one repo, with one permission, and it expires on its own. If it leaks, the damage is small and temporary.
+- **What `-u` does in `git push -u origin main`:** links my local `main` branch to GitHub's `main`. After that, plain `git push` and `git pull` know where to go.
+- **Local commit vs push:** `git commit` saves a snapshot on my Mac only. `git push` uploads it to GitHub.
+
+### Quick self-test
+1. Why did GitHub reject my password, and what do you use instead?
+2. Why should a new GitHub repo be created empty when you already have local commits?
+3. What does "least privilege" mean for an access token?
+4. Where does git keep my token on a Mac, so I'm not asked every time?
+5. What's the difference between `git commit` and `git push`?
+
+---
