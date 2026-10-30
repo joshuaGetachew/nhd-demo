@@ -6,7 +6,7 @@ Goal: local Kubernetes cluster → small Go app → deploy as a pod → Promethe
 
 - [x] **Step 1** — Verify local Kubernetes cluster (Rancher Desktop)
 - [x] **Step 2** — Write a small Go web app with a `/metrics` endpoint
-- [ ] **Step 3** — Containerize it (multi-stage Dockerfile)
+- [x] **Step 3** — Containerize it (multi-stage Dockerfile)
 - [ ] **Step 4** — Deploy to Kubernetes (Deployment + Service)
 - [ ] **Step 5** — Install Prometheus + Grafana (Helm, kube-prometheus-stack)
 - [ ] **Step 6** — Scrape the app's metrics and build a Grafana dashboard
@@ -114,5 +114,50 @@ Custom metrics:
 - `brew install go` printed a **tap trust** warning about a third-party tap, `sidneys/homebrew`, that was already on this Mac. Go itself came from the official `homebrew/core`, so the warning didn't affect this install. Left the tap untrusted; decide separately whether you still need it (`brew untap sidneys/homebrew` removes it).
 - First smoke test printed nothing: `curl` ran before the server had started listening. Fixed with `curl --retry 10 --retry-connrefused --retry-delay 1`. The same race is why Kubernetes has **readiness probes**: don't send traffic until the app answers.
 - Added `/app/app` to `.gitignore` so a binary from `go build` never gets committed.
+
+---
+
+## Step 3 — Containerize (2026-10-29)
+
+### What we did
+Wrote `app/Dockerfile` (multi-stage) and `app/.dockerignore`, then built and ran the image:
+
+```sh
+cd app
+docker build -t nhd-demo:0.1.0 .
+docker run -d --name nhd-demo-test -p 8082:8080 nhd-demo:0.1.0
+curl localhost:8082/            # Hello from 4319676c20fa  (container ID = hostname)
+curl localhost:8082/healthz     # ok
+curl localhost:8082/metrics | grep http_requests
+docker rm -f nhd-demo-test
+```
+
+| Image | Size |
+|---|---|
+| `golang:1.27.3` (build stage only) | 1.32GB |
+| `nhd-demo:0.1.0` (what we ship) | **18.2MB** |
+
+### The Dockerfile, line by line
+| Line | Why |
+|---|---|
+| `FROM golang:1.27.3 AS build` | Build stage with the full Go toolchain. Exact version pinned to match `go.mod`, so builds are reproducible. |
+| `COPY go.mod go.sum ./` then `RUN go mod download` | **Layer caching**: dependencies are downloaded in their own layer, which is reused until go.mod/go.sum change. Editing `main.go` doesn't re-download anything. |
+| `COPY . .` | Copies the source. `.dockerignore` keeps out local binaries and the Dockerfile itself. |
+| `CGO_ENABLED=0 go build` | Produces a **static binary** with no dependency on C libraries, so it runs on an image with no libc. |
+| `-trimpath -ldflags="-s -w"` | Removes local file paths and debug symbols: smaller binary, no info about the build machine. |
+| `FROM gcr.io/distroless/static-debian12:nonroot` | Runtime stage. **Distroless**: no shell, no package manager, no extra tools. Only the build output is copied in. |
+| `USER nonroot:nonroot` | Runs as an unprivileged user (UID 65532), not root. Limits the damage if the app is compromised. Kubernetes can enforce this with `runAsNonRoot: true`. |
+| `EXPOSE 8080` | Documents the port. It doesn't publish anything; `-p` (Docker) or a Service (Kubernetes) does that. |
+| `ENTRYPOINT ["/app"]` | **Exec form** (JSON array): the app runs as PID 1 and receives SIGTERM directly when Kubernetes stops the pod. The shell form would need a shell, which distroless doesn't have. |
+
+### Concepts to know
+- **Multi-stage build**: compile in a big image, copy only the result into a tiny one. The compiler, source code and caches never reach production.
+- **Smaller image = smaller attack surface**: fewer packages means fewer CVEs for scanners to flag, faster pulls and faster pod startup.
+- **Image tag** `0.1.0` instead of `latest`: Kubernetes knows exactly which version is running, and rollbacks are clear. With `latest`, two nodes can run different code under the same name.
+- **Moby engine** (Step 1): the image is in the same store k3s uses, so Step 4 can deploy it without pushing to a registry. Use `imagePullPolicy: IfNotPresent` (or `Never`) so Kubernetes doesn't try to pull it from Docker Hub.
+
+### What broke / observations
+- `docker exec nhd-demo-test sh` fails: `exec: "sh": executable file not found`. **Expected**: distroless has no shell. That's the security point. To debug a distroless pod, use `kubectl debug` to attach a temporary debug container, or build with the `:debug` tag variant, which includes busybox.
+- Image is built for **linux/arm64** (the Rancher Desktop VM on Apple Silicon). An x86 server would need `docker buildx build --platform linux/amd64`.
 
 ---

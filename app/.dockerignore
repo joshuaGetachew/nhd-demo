@@ -1,0 +1,4 @@
+# Keep the build context small and avoid copying local binaries into the image.
+app
+Dockerfile
+.dockerignore

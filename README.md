@@ -15,7 +15,7 @@ A hands-on DevOps lab: a small Go web app running on a local Kubernetes cluster,
 |---|---|
 | 1. Local Kubernetes cluster | Done |
 | 2. Go app with `/metrics` | Done |
-| 3. Containerize | Not started |
+| 3. Containerize | Done |
 | 4. Deploy to Kubernetes | Not started |
 | 5. Install Prometheus + Grafana | Not started |
 | 6. Scrape app metrics + dashboard | Not started |
@@ -40,6 +40,14 @@ cd app
 go test ./...
 go run .                          # http://localhost:8080 (set PORT to change)
 curl localhost:8080/metrics
+```
+
+## Build the image
+
+```sh
+cd app
+docker build -t nhd-demo:0.1.0 .
+docker run --rm -p 8080:8080 nhd-demo:0.1.0
 ```
 
 ## Notes
