@@ -347,3 +347,158 @@ kubectl -n nhd-demo rollout status deployment/nhd-demo
 - Images: `nhd-demo:0.1.0` (18.2MB) and `nhd-demo:0.2.0` (18.3MB) are both kept, so rolling back to 0.1.0 still works.
 
 ---
+
+## Study notes: Session 2, Go app, Docker image and Kubernetes deploy (2026-10-28 to 2026-10-30)
+
+A plain-English recap of the second session, for review before the interview.
+
+### What we built
+1. **Installed Go** on my Mac with `brew install go`, so I can run and test the app directly instead of building a Docker image every time.
+2. **Wrote a small Go web app** (`app/main.go`) with three pages:
+   - `/` says `Hello from <hostname>`, so I can see which machine or pod answered.
+   - `/healthz` says `ok`, so Kubernetes can check the app is alive.
+   - `/metrics` lists the app's numbers (request counts, response times) in the format Prometheus reads.
+3. **Wrote a test** (`app/main_test.go`) that starts the app and checks all three pages. Run it with `go test ./...`.
+4. **Packaged the app as a Docker image** (`app/Dockerfile`). It's built in two stages: compile in a big 1.32GB Go image, then copy only the finished program into a tiny one. The final image is **18MB**, has no shell, and doesn't run as the admin user.
+5. **Deployed it to Kubernetes** (`k8s/` folder): 3 copies (pods) of the app, and one Service that spreads requests between them.
+6. **Tested Kubernetes features:** load balancing (all 3 pods answered), self-healing (deleted pods were replaced in about a second), in both the terminal and Rancher Desktop.
+7. **Added graceful shutdown** (version 0.2.0). When Kubernetes stops a pod, the app now finishes what it's doing before exiting. A full restart with constant traffic: **670 requests, 0 failures**.
+
+### Questions I asked, and the answers
+
+**"Where do I put the 'try it yourself' code?"**
+In a **terminal**, not in a file. They're commands to run. In VS Code: Terminal → New Terminal (`` Ctrl+` ``).
+
+**"Do I push before or after testing?"**
+It doesn't matter technically: testing runs the app, pushing uploads the code. Good habit: **test first, then push**, so only working code goes to GitHub.
+
+**"What do these commands do?"**
+- `cd app`: move into the `app` folder (Go needs to be where `go.mod` is).
+- `go run .`: compile and start the app. It keeps running until **Ctrl+C**.
+- `curl localhost:8080/`: send a web request from the terminal, like a browser would, and print the reply.
+- `| grep http_`: from the output, show only lines containing `http_`.
+
+**"What are dependencies?"**
+Code someone else wrote that my app needs. Ours: the Prometheus library. Go lists them in `go.mod` and stores fingerprints in `go.sum` so nobody can swap them. Fewer dependencies = smaller image, fewer security patches, less risk.
+
+**"What's a handler?"**
+The function that runs when a request hits a particular URL. It gets the **request** (`r`, what was asked) and a **response writer** (`w`, where to write the answer). The **router** (mux) decides which handler gets which URL.
+
+**"What's curl? And do replica pods all have the same name?"**
+`curl` = a command-line web request. Replica pods run the **same image** but each gets a **unique name**: `nhd-demo` (Deployment) + `7cbb7c5f95` (version) + `x2kqp` (random). Like identical twins with different names.
+
+**"What does `listening on :8080` mean?"**
+The app has started and is waiting for requests on **port 8080**. A port is like an apartment number: the computer is the building, the port says which program gets the mail. Only one program can use a port at a time.
+
+**"Why do I need a second terminal?"**
+`go run .` and `docker run` keep the first terminal busy while the app runs. The second terminal is free to send `curl` requests. (Alternative: `docker run -d` runs it in the background.)
+
+**"Why does the container say a different 'Hello from'?"**
+The code asks "what's my hostname?" each time. On my Mac the answer is my Mac's name. A container has its **own hostname** (its ID), and a Kubernetes pod's hostname is its **pod name**. Same code, different answer depending on where it runs.
+
+**"So an image is the recipe and a container is the plate of food?"**
+Close. More exactly:
+| Kitchen | Docker |
+|---|---|
+| Recipe | **Dockerfile** |
+| Cooking and freezing a meal | `docker build` |
+| Frozen meal | **Image** (read-only, identical every time) |
+| Heating it up and serving | `docker run` |
+| Plate of food | **Container** (a running copy) |
+You can serve many plates from one frozen meal. That's what replicas are.
+
+**"What are the YAML files?"**
+Descriptions of **what I want to exist**. Kubernetes makes it happen (that's called **declarative**).
+- `namespace.yaml`: a folder called `nhd-demo` for my stuff.
+- `deployment.yaml`: "always keep 3 copies of my app running."
+- `service.yaml`: "give those copies one shared address and spread requests between them."
+They connect through a **label** (`app: nhd-demo`), like a name tag: the Service sends traffic to any pod wearing that tag.
+
+**"Where did the Prometheus metrics page come from? I thought I had to set that up."**
+Two different things:
+- **`/metrics`** = my app's page of current numbers. We built it in Step 2. Like a **thermometer** in each room.
+- **Prometheus server** = a separate program (Step 5) that visits every pod's `/metrics` every 15–30 seconds and **records the history**. Like a person writing down every thermometer reading in a notebook. **Grafana** (Step 6) draws charts from that notebook.
+
+**"What does Ctrl+C do?"**
+Stops the command running in that terminal. It sends a "please stop" signal (**SIGINT**). It doesn't delete anything in Kubernetes: the pods keep running.
+
+### Where I got stuck, and how it was resolved
+
+**"It failed" when testing the app.**
+Claude ran the same tests and they passed, so the problem was in how the commands were run. Common causes:
+| Error | Cause | Fix |
+|---|---|---|
+| `go.mod file not found` | In the wrong folder | `cd app` first |
+| `zsh: no matches found` | Pasted the `# comments` too | Paste only the commands |
+| `Failed to connect` | Server not running | Keep `go run .` open in terminal 1 |
+| `address already in use` | An old server is still running | Ctrl+C in that terminal |
+| `command not found: go` | Terminal opened before Go was installed | Open a new terminal |
+
+**Where to start testing again.** The image was already built and pushed, but an old `go run .` was still using port 8080. Fix: Ctrl+C that terminal first (or `kill <process number>`), then `docker run`.
+
+**The pods wouldn't start: `CreateContainerConfigError`.**
+- *Simply:* I told Kubernetes "don't run this as the admin user (root)." The image said "run as the user named *nonroot*." Kubernetes only checks users by **number** (root is always 0), so it couldn't tell whether "nonroot" was secretly 0, and refused. Like a bouncer who can only check a date of birth, being shown a name tag that says "Adult."
+- *Fix:* tell Kubernetes the number: `runAsUser: 65532`.
+- *How we found it:* `kubectl describe pod <name>`, then scroll to **Events** at the bottom and look for the `Warning` line. It said: `container has runAsNonRoot and image has non-numeric user (nonroot), cannot verify user is non-root`.
+- *Lesson:* pod won't start → `kubectl describe pod` → Events. Pod started then crashed → `kubectl logs`.
+
+**Couldn't find the Rancher Desktop window.**
+The menu-bar icon was probably hidden behind the MacBook's **notch** (too many menu-bar icons). Fix: open it from Spotlight (Cmd+Space, "Rancher"), or run `open -a "Rancher Desktop"`.
+
+**Port Forwarding showed `http`, not port 80.**
+`http` is the **name** we gave the port in the YAML. Same port. Rancher Desktop shows the name instead of the number.
+
+**`kubectl get pods -w` was hard to read.**
+`-w` (watch) only prints a new line each time a pod **changes**, so you can't see the total. Better options:
+- `kubectl -n nhd-demo get deployment nhd-demo -w` shows `READY 3/3 → 2/3 → 3/3`.
+- `while true; do clear; kubectl -n nhd-demo get pods; sleep 1; done` refreshes the whole list every second.
+
+**Deleted pods showed `Error`.**
+Kubernetes stops a pod by sending **SIGTERM** ("please shut down"). The app didn't handle it, so it was killed mid-work. Fixed with **graceful shutdown** (version 0.2.0): catch the signal, finish current requests, exit cleanly. Now deleted pods show **`Completed`**. Also added a 5-second **preStop** pause so the Service stops sending traffic to the pod before it shuts down.
+
+### Things Claude got wrong (and corrected)
+- **"`docker ps` will be empty after stopping the container."** Not true here. It also lists Kubernetes' own containers (names starting `k8s_`), because Rancher Desktop's Docker engine is shared with Kubernetes. They're normal: leave them alone.
+- **"Rancher Desktop's port forward breaks if you delete its pod."** Wrong for Rancher Desktop: it **reconnected to another pod automatically**, which is why my browser showed a new name. Plain `kubectl port-forward` **does** break (`error: lost connection to pod`). Claude tested this to confirm.
+
+### Things that looked like errors but weren't
+- **Homebrew "tap trust" warning** while installing Go: about a different, third-party Homebrew source already on my Mac (`sidneys/homebrew`). Go came from the official source, so it's unrelated.
+- **First curl printed nothing:** curl ran before the app had started. Retry with `--retry`. (This is why Kubernetes has readiness probes.)
+- **`docker exec ... sh` fails with `"sh": executable file not found`:** on purpose. Distroless images have no shell, so an attacker has nothing to work with.
+- **`couldn't attach to pod ... falling back to streaming logs`:** the test pod finished too fast for kubectl to attach. Output still came through.
+- **Load balancing isn't in strict order:** Kubernetes picks a pod at random for each new connection. Over many requests it evens out.
+- **Port-forward always shows the same pod name:** port-forward tunnels to **one** pod. It's a testing tool, not load balancing.
+
+### Ideas to be able to explain in an interview
+- **Image vs container:** image = read-only package; container = running copy. One image, many containers.
+- **Multi-stage build:** compile in a big image, ship only the result in a tiny one. Smaller, faster, fewer security holes.
+- **Why not run as root:** if the app is hacked, the attacker doesn't get admin rights.
+- **Desired state / reconciliation:** I say "3 replicas"; Kubernetes keeps comparing that to what's running and fixes any difference. That's **self-healing**.
+- **Readiness vs liveness probe:** readiness failing = stop sending this pod traffic (no restart). Liveness failing = restart the container.
+- **Service:** one stable name and address in front of pods that come and go. Finds them by **label**.
+- **Rolling update:** new image tag → new pods start, become ready, then old ones are removed. No downtime. `kubectl rollout undo` goes back.
+- **Graceful shutdown:** SIGTERM → finish current requests → exit. After 30s, Kubernetes sends SIGKILL, which can't be caught.
+- **Pull model:** Prometheus fetches `/metrics` from the app; the app doesn't send its data.
+- **Label cardinality:** never put unlimited values (like any URL a user types) in a metric label, or Prometheus fills up its memory.
+
+### Debugging checklist
+```sh
+kubectl -n nhd-demo get pods                  # what's the STATUS?
+kubectl -n nhd-demo describe pod <name>       # won't start? read Events, look for Warning
+kubectl -n nhd-demo logs <name>               # started but crashed? read the app's output
+kubectl -n nhd-demo get endpointslices        # which pods is the Service sending traffic to?
+lsof -nP -iTCP:8080 -sTCP:LISTEN              # what's using port 8080 on my Mac?
+```
+
+### Quick self-test
+1. What's the difference between an image and a container?
+2. Why is the final image 18MB when the Go image is 1.32GB?
+3. Why does `instrument` take `path` as a fixed string instead of reading the URL? What could go wrong otherwise?
+4. A pod is running but "not ready" and gets no traffic. Which endpoint and which probe are involved? How is that different from a liveness failure?
+5. Your manager asks for p95 latency and error rate. Which metric answers each, and why is one a counter and the other a histogram?
+6. Pods are stuck in `CreateContainerConfigError`. What command do you run, and where do you look?
+7. Why did `runAsNonRoot` need a number instead of the name `nonroot`?
+8. You delete a pod. Why does a new one appear, and why does it have a different name?
+9. What does the 5-second `preStop` pause protect against?
+10. What's the difference between the `/metrics` page and the Prometheus server?
+
+---
