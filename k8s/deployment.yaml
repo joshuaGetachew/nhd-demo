@@ -23,7 +23,7 @@ spec:
         runAsGroup: 65532
       containers:
         - name: app
-          image: nhd-demo:0.1.0
+          image: nhd-demo:0.2.0
           # Built locally into Rancher Desktop's moby engine, so never pull from a registry.
           imagePullPolicy: Never
           ports:
@@ -32,6 +32,12 @@ spec:
           env:
             - name: PORT
               value: "8080"
+          lifecycle:
+            # Keep serving for 5s after termination starts, while the Service
+            # stops routing to this pod. Then SIGTERM triggers graceful shutdown.
+            preStop:
+              sleep:
+                seconds: 5
           readinessProbe:
             httpGet:
               path: /healthz

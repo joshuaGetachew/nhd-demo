@@ -2,11 +2,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -98,6 +102,28 @@ func main() {
 		Handler:           newMux(newRegistry()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	log.Printf("listening on %s", addr)
-	log.Fatal(srv.ListenAndServe())
+
+	// Kubernetes sends SIGTERM when it stops a pod; Ctrl+C sends SIGINT.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	go func() {
+		log.Printf("listening on %s", addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Print("shutting down")
+
+	// Stop accepting new connections and let in-flight requests finish.
+	// Must be shorter than the pod's terminationGracePeriodSeconds (default 30s).
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("shutdown: %v", err)
+		return
+	}
+	log.Print("stopped")
 }

@@ -46,8 +46,8 @@ curl localhost:8080/metrics
 
 ```sh
 cd app
-docker build -t nhd-demo:0.1.0 .
-docker run --rm -p 8080:8080 nhd-demo:0.1.0
+docker build -t nhd-demo:0.2.0 .
+docker run --rm -p 8080:8080 nhd-demo:0.2.0
 ```
 
 ## Deploy to Kubernetes

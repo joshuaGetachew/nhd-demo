@@ -286,3 +286,64 @@ At first we planned to compile the app inside Docker, so no local Go was needed.
 5. What's the difference between `git commit` and `git push`?
 
 ---
+
+## Step 4b — Graceful shutdown + rolling update to 0.2.0 (2026-10-30)
+
+### Why
+In Step 4, deleted pods ended in **`Error`**. Kubernetes stops a pod by sending **SIGTERM**; the app didn't handle it, so Go was killed mid-request and exited non-zero. During a deploy, that can cut off requests that are in progress.
+
+### What we changed
+**`app/main.go`**: catch the signal and shut down cleanly:
+```go
+ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+go func() { srv.ListenAndServe() ... }()   // server runs in the background
+<-ctx.Done()                                // main waits here until a signal arrives
+srv.Shutdown(10s timeout)                   // stop accepting new connections, finish in-flight ones
+```
+- `signal.NotifyContext`: turns "SIGTERM/SIGINT arrived" into a context that's cancelled. SIGINT is Ctrl+C, so local runs shut down the same way.
+- `ListenAndServe` moves into a **goroutine** (a lightweight background task) so `main` is free to wait for the signal.
+- `http.ErrServerClosed` is what `ListenAndServe` returns after `Shutdown`. It's expected, so it isn't treated as an error.
+- The **10s timeout** must be shorter than the pod's `terminationGracePeriodSeconds` (default **30s**). After that, Kubernetes sends **SIGKILL**, which can't be caught.
+
+**`k8s/deployment.yaml`**: image `0.2.0`, plus:
+```yaml
+lifecycle:
+  preStop:
+    sleep:
+      seconds: 5
+```
+**Why the pause:** on delete, Kubernetes *at the same time* (1) starts terminating the pod and (2) removes it from the Service's endpoints. Step 2 takes a moment to reach every node. Without the pause, the app could stop accepting connections while the Service still sends it traffic → failed requests. `preStop` runs **before** SIGTERM, so the pod keeps serving for 5s while routing catches up. Distroless has no `sleep` binary, so we use Kubernetes' built-in `sleep` action instead of `exec: ["sleep", "5"]`.
+
+### Termination timeline (what happens on `kubectl delete pod`)
+1. Pod marked **Terminating**; removed from Service endpoints (takes a moment to spread).
+2. **preStop** runs: 5s pause, pod still serves requests.
+3. **SIGTERM** sent → app logs `shutting down`, finishes in-flight requests, logs `stopped`, exits 0.
+4. If still running after 30s total → **SIGKILL**.
+
+### Testing
+```sh
+# Locally: exit code after SIGTERM
+go build -o /tmp/app . && /tmp/app & P=$!; kill -TERM $P; wait $P; echo $?    # 0
+
+# Build + roll out (new tag, so Kubernetes sees a change)
+docker build -t nhd-demo:0.2.0 app/
+kubectl apply -f k8s/
+kubectl -n nhd-demo rollout status deployment/nhd-demo
+```
+| Test | Result |
+|---|---|
+| Delete a 0.2.0 pod | `Terminating` → **`Completed`** (was `Error`). Logs: `shutting down`, `stopped`. Took ~6s (5s preStop + shutdown). |
+| `kubectl rollout restart` with continuous traffic (curl every 50ms for 40s from inside the cluster) | **670 requests, 670 × HTTP 200, 0 failures** → zero-downtime deploy. |
+
+### Concepts to know
+- **Rolling update**: changing the pod template (e.g. a new image tag) makes the Deployment create a **new ReplicaSet** (new pod-name hash: `7cbb7c5f95` → `57b8c7bd9f`), bring new pods up, wait for readiness, then remove old ones. The defaults `maxSurge: 25%`, `maxUnavailable: 25%` control the pace.
+- **`kubectl rollout restart`**: restarts all pods with the same image (rolling). Handy after config changes.
+- **`kubectl rollout undo deployment/nhd-demo`**: goes back to the previous ReplicaSet. **Rollback** works because old ReplicaSets are kept (`kubectl get rs`).
+- **Why a new tag (`0.2.0`) and not rebuilding `0.1.0`**: if the tag doesn't change, the pod template doesn't change, so `kubectl apply` does nothing. A new tag also gives a clear history and makes rollback possible.
+- **SIGTERM vs SIGKILL**: SIGTERM = "please stop" (can be caught and handled). SIGKILL = "stop now" (can't be caught). Kubernetes sends SIGTERM first, then SIGKILL after the grace period.
+
+### What broke / observations
+- The last 0.1.0 pods still ended in `Error` during the rollout: they were running the old code. Only 0.2.0 pods shut down cleanly.
+- Images: `nhd-demo:0.1.0` (18.2MB) and `nhd-demo:0.2.0` (18.3MB) are both kept, so rolling back to 0.1.0 still works.
+
+---
