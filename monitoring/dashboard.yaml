@@ -1,0 +1,202 @@
+# Grafana's sidecar container loads any ConfigMap labelled grafana_dashboard: "1".
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nhd-demo-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  nhd-demo.json: |
+    {
+      "uid": "nhd-demo",
+      "title": "nhd-demo app",
+      "tags": ["nhd-demo"],
+      "schemaVersion": 39,
+      "editable": true,
+      "refresh": "15s",
+      "time": { "from": "now-30m", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Request rate (by status code)",
+          "description": "Requests per second to the app's / page, across all pods. Kubernetes health checks are charted separately.",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (code) (rate(http_requests_total{namespace=\"nhd-demo\", path=\"/\"}[1m]))",
+              "legendFormat": "{{code}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "min": 0,
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          }
+        },
+        {
+          "id": 2,
+          "title": "Health check rate",
+          "description": "Requests per second to /healthz, across all pods. This is Kubernetes' probes, not users. Expect about 0.9 with 3 pods.",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(http_requests_total{namespace=\"nhd-demo\", path=\"/healthz\"}[1m]))",
+              "legendFormat": "/healthz"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "min": 0,
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": { "showLegend": false },
+            "tooltip": { "mode": "single" }
+          }
+        },
+        {
+          "id": 3,
+          "title": "Request duration: average",
+          "description": "Total time spent answering requests to / divided by the number of requests. This is the accurate speed figure for this app. It is empty when there is no traffic.",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(http_request_duration_seconds_sum{namespace=\"nhd-demo\", path=\"/\"}[1m])) / sum(rate(http_request_duration_seconds_count{namespace=\"nhd-demo\", path=\"/\"}[1m]))",
+              "legendFormat": "average"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0,
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": { "showLegend": false },
+            "tooltip": { "mode": "single" }
+          }
+        },
+        {
+          "id": 4,
+          "title": "Request duration: p95",
+          "description": "95% of requests were faster than this. It's an estimate from the histogram buckets, so it's only as precise as the bucket it falls in. It is empty when there is no traffic.",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"nhd-demo\", path=\"/\"}[1m])))",
+              "legendFormat": "p95"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0,
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": { "showLegend": false },
+            "tooltip": { "mode": "single" }
+          }
+        },
+        {
+          "id": 5,
+          "title": "Pod CPU",
+          "description": "CPU used by each pod, in millicores (1000m = one full CPU core). Each pod requests 10m.",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"nhd-demo\", pod=~\"nhd-demo-.*\", container=\"\"}[2m])) * 1000",
+              "legendFormat": "{{pod}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "suffix:m",
+              "min": 0,
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          }
+        },
+        {
+          "id": 6,
+          "title": "Pod memory",
+          "description": "Memory used by each pod (working set, the figure Kubernetes compares against the limit). A pod over the 64Mi limit gets OOMKilled.",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"nhd-demo\", pod=~\"nhd-demo-.*\", container=\"\"})",
+              "legendFormat": "{{pod}}"
+            },
+            {
+              "refId": "B",
+              "expr": "max(kube_pod_container_resource_limits{namespace=\"nhd-demo\", container=\"app\", resource=\"memory\"})",
+              "legendFormat": "memory limit"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "min": 0,
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" }
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "memory limit" },
+                "properties": [
+                  { "id": "color", "value": { "mode": "fixed", "fixedColor": "#8E8E8E" } },
+                  { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 6] } }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          }
+        }
+      ]
+    }

@@ -1,0 +1,13 @@
+# Overrides for the kube-prometheus-stack Helm chart.
+# Lives outside k8s/ because it's Helm input, not a manifest for kubectl apply.
+
+# k3s runs these inside a single process and doesn't expose them for scraping.
+# Left on, each one shows up as a permanently failing target and alert.
+kubeControllerManager:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false

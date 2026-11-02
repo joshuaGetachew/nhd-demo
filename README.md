@@ -17,8 +17,8 @@ A hands-on DevOps lab: a small Go web app running on a local Kubernetes cluster,
 | 2. Go app with `/metrics` | Done |
 | 3. Containerize | Done |
 | 4. Deploy to Kubernetes | Done |
-| 5. Install Prometheus + Grafana | Not started |
-| 6. Scrape app metrics + dashboard | Not started |
+| 5. Install Prometheus + Grafana | Done |
+| 6. Scrape app metrics + dashboard | Done |
 
 ## Prerequisites
 
@@ -46,8 +46,8 @@ curl localhost:8080/metrics
 
 ```sh
 cd app
-docker build -t nhd-demo:0.2.0 .
-docker run --rm -p 8080:8080 nhd-demo:0.2.0
+docker build -t nhd-demo:0.3.0 .
+docker run --rm -p 8080:8080 nhd-demo:0.3.0
 ```
 
 ## Deploy to Kubernetes
@@ -57,6 +57,29 @@ kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/
 kubectl -n nhd-demo get pods
 kubectl -n nhd-demo port-forward svc/nhd-demo 8090:80   # then: curl localhost:8090/
+```
+
+## Monitoring
+
+```sh
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update prometheus-community
+helm install monitoring prometheus-community/kube-prometheus-stack \
+  --version 92.17.0 --namespace monitoring --create-namespace -f monitoring/values.yaml
+kubectl apply -f monitoring/servicemonitor.yaml -f monitoring/dashboard.yaml
+```
+
+Open Grafana at http://localhost:3000 (user `admin`), then go to the `nhd-demo app` dashboard:
+
+```sh
+kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80
+kubectl -n monitoring get secret monitoring-grafana -o jsonpath='{.data.admin-password}' | base64 -d; echo
+```
+
+Check that Prometheus is scraping the app at http://localhost:9090/targets:
+
+```sh
+kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 9090:9090
 ```
 
 ## Notes

@@ -8,8 +8,8 @@ Goal: local Kubernetes cluster → small Go app → deploy as a pod → Promethe
 - [x] **Step 2** — Write a small Go web app with a `/metrics` endpoint
 - [x] **Step 3** — Containerize it (multi-stage Dockerfile)
 - [x] **Step 4** — Deploy to Kubernetes (Deployment + Service)
-- [ ] **Step 5** — Install Prometheus + Grafana (Helm, kube-prometheus-stack)
-- [ ] **Step 6** — Scrape the app's metrics and build a Grafana dashboard
+- [x] **Step 5** — Install Prometheus + Grafana (Helm, kube-prometheus-stack)
+- [x] **Step 6** — Scrape the app's metrics and build a Grafana dashboard
 
 ---
 
@@ -500,5 +500,178 @@ lsof -nP -iTCP:8080 -sTCP:LISTEN              # what's using port 8080 on my Mac
 8. You delete a pod. Why does a new one appear, and why does it have a different name?
 9. What does the 5-second `preStop` pause protect against?
 10. What's the difference between the `/metrics` page and the Prometheus server?
+
+---
+
+## Step 5 — Install Prometheus + Grafana (2026-11-01)
+
+### What we did
+```sh
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update prometheus-community
+helm install monitoring prometheus-community/kube-prometheus-stack \
+  --version 92.17.0 --namespace monitoring --create-namespace -f monitoring/values.yaml
+kubectl -n monitoring get pods                 # 6 pods Running, 0 restarts
+```
+The Grafana password is generated at install and kept in a Secret, **not in this repo**:
+```sh
+kubectl -n monitoring get secret monitoring-grafana -o jsonpath='{.data.admin-password}' | base64 -d; echo
+kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80    # http://localhost:3000, user admin
+kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 9090:9090    # http://localhost:9090/targets
+```
+
+### What got installed
+| Pod | Job |
+|---|---|
+| `prometheus-...-prometheus-0` | Scrapes `/metrics` pages and stores the history |
+| `monitoring-grafana-...` | Draws charts; already connected to Prometheus |
+| `alertmanager-...` | Sends alerts when rules trigger |
+| `monitoring-kube-prometheus-operator-...` | Turns ServiceMonitors into Prometheus config |
+| `monitoring-kube-state-metrics-...` | Reports Kubernetes objects' state, e.g. ready replicas |
+| `monitoring-prometheus-node-exporter-...` | Reports the machine: disk, memory, network |
+
+### Concepts to know
+- **Helm chart**: a package of Kubernetes manifests. **Pin the version** for the same reason you pin image tags.
+- **`monitoring/values.yaml`**: overrides for the chart. It turns off scraping of `kubeControllerManager`, `kubeEtcd`, `kubeScheduler` and `kubeProxy`, because k3s runs them in one process and doesn't expose them. Left on, they show as permanently failing targets. It's outside `k8s/` because it's Helm input, not a manifest for `kubectl apply`.
+- **Exporter**: a helper that publishes metrics about something that doesn't publish its own, e.g. node-exporter.
+- **`Watchdog` alert**: always fires, on purpose, to prove the alerting pipeline works.
+
+### What broke / observations
+- 13 targets up, but `monitoring-grafana` first showed `unknown`. It just hadn't been scraped yet.
+- Node memory went from 27% to 60% (about 3.5 GB of 5.8 GB). First thing to check if the cluster gets sluggish.
+- A `curl` alert check failed with a Python `KeyError`: `curl` treats `{}` in a URL as a pattern. **Fix:** `curl -G --data-urlencode 'query=...'`.
+
+---
+
+## Step 6 — Scrape the app + Grafana dashboard (2026-11-01)
+
+### Scraping: `monitoring/servicemonitor.yaml`
+A **ServiceMonitor** tells Prometheus which Service to scrape.
+```sh
+kubectl apply -f monitoring/servicemonitor.yaml
+```
+| Field | Why |
+|---|---|
+| `labels: release: monitoring` | Prometheus only picks up ServiceMonitors with this label. Without it, the file is **ignored with no error**. |
+| `selector: app: nhd-demo` | Finds the app's Service |
+| `port: http`, `path: /metrics`, `interval: 15s` | What to scrape and how often |
+
+Targets appeared after about 30 seconds: `serviceMonitor/nhd-demo/nhd-demo/0`, `3 / 3 up`. Prometheus uses the Service to find the pods, then scrapes each **pod IP directly on 8080**. Going through the Service would hit a random pod each time, and each pod keeps its own counts.
+
+The chart's own components are scraped the same way: it created 9 ServiceMonitors at install (`kubectl get servicemonitors -A`).
+
+### Dashboard: `monitoring/dashboard.yaml`
+A ConfigMap labelled `grafana_dashboard: "1"`. A sidecar container in the Grafana pod loads it, so the dashboard is tracked in Git and recreated automatically.
+
+| Panel | Query |
+|---|---|
+| Request rate | `sum by (code) (rate(http_requests_total{namespace="nhd-demo", path="/"}[1m]))` |
+| Health check rate | Same, for `path="/healthz"`. About 0.9/s: 0.3/s per pod × 3 pods. |
+| Duration: average | `rate(..._sum[1m])` ÷ `rate(..._count[1m])` |
+| Duration: p95 | `histogram_quantile(0.95, sum by (le) (rate(..._bucket[1m])))` |
+| Pod CPU | `sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="nhd-demo", pod=~"nhd-demo-.*", container=""}[2m])) * 1000` |
+| Pod memory | `sum by (pod) (container_memory_working_set_bytes{..., container=""})`, plus the limit from `kube_pod_container_resource_limits` |
+
+### Image 0.3.0: smaller histogram buckets
+`/metrics`, the counter and the histogram already existed from Step 2, so at first no rebuild was needed. Building the dashboard then showed a real reason for one: `prometheus.DefBuckets` starts at 5ms, but requests take about 0.02ms.
+
+```sh
+docker build -t nhd-demo:0.3.0 app/
+kubectl apply -f k8s/
+kubectl -n nhd-demo rollout status deployment/nhd-demo
+```
+| Metric | Before | After |
+|---|---|---|
+| p50 | not checked | 0.014 ms |
+| p95 | 4.75 ms (meaningless) | 0.05 ms |
+| Average | 0.015 ms | 0.022 ms |
+
+### Concepts to know
+- **Why p95 was stuck at 4.75 ms:** `histogram_quantile` only knows which bucket a request fell in, then estimates inside it. With everything in the 0–5ms bucket, the 95% point is 95% of the way through: 4.75ms, whatever the real speed.
+- **Choose buckets around your real latency.** Every bucket is another time series per path and per pod, so don't add them without limit.
+- **Test traffic in the same namespace:** the `load-test` pod shows up in pod queries too, so the CPU and memory panels filter with `pod=~"nhd-demo-.*"`.
+
+### What broke / observations
+- **CPU and memory queries returned nothing** with `container="app"`. On this setup, the kubelet's cAdvisor only reports pod-level numbers, with an empty `container` label. **Fix:** filter on `container=""`. Built-in dashboards that expect per-container numbers may have empty panels here.
+- **Counters reset on rollout:** new pods start at zero. `rate()` handles this, which is one reason to use it over raw counts.
+- The running `0.3.0` image was built just before a `gofmt` whitespace fix to `main.go`, so behaviour is identical.
+- No failed-request count was measured during this rollout, unlike `0.2.0`.
+- The dashboard's data was checked by running every query through Grafana. Claude never saw the charts rendered. A colourblind-safety check on Grafana's default colours printed no result, so they're unverified.
+- `prom/prometheus:v3.5.0` was pulled locally only to run `promtool`. `docker rmi prom/prometheus:v3.5.0` removes it.
+
+---
+
+## Study notes: Session 3, Prometheus and Grafana (2026-11-01)
+
+A plain-English recap of the third session, for review before the interview.
+
+### What we built
+1. **Confirmed `/metrics` was already working** and in the right format, using Prometheus's own checker, `promtool`.
+2. **Installed the monitoring stack** with Helm into a `monitoring` namespace.
+3. **Told Prometheus about my app** with a ServiceMonitor. All 3 pods showed as up.
+4. **Built a Grafana dashboard** with request rate, health check rate, average and p95 duration, and pod CPU and memory. It's a file in the repo.
+5. **Released version 0.3.0** with smaller timing buckets, so p95 shows my app's real speed.
+
+### Questions I asked, and the answers
+
+**"When did we set up Prometheus already?"**
+We hadn't. In Step 2 we added the Prometheus **client library**, which is code inside my app that keeps counts and publishes `/metrics`. The Prometheus **server** is a separate program that visits that page and saves the history. Same name, different things.
+
+**"What am I looking at on the 9090 targets page?"**
+Prometheus's checklist of every metrics page it visits, and how the latest visit went. The 3 `nhd-demo` endpoints are my 3 pods.
+
+**"What are all these other metrics pages that aren't my app?"**
+The same kind of page, published by other programs: Kubernetes, the machine, and the monitoring tools themselves. Pod CPU and memory come from one of them, the kubelet, so I don't need code for those.
+
+**"Why is Prometheus already watching those, but needs a ServiceMonitor for my app?"**
+They have ServiceMonitors too. The chart created 9 of them at install. It just doesn't know my app exists, so I write that one myself.
+
+**"What does 'every query returns real data' mean?"**
+Each chart is driven by a question to Prometheus. Claude asked each one and got real numbers back. That proves the numbers work, not that the page looks right.
+
+**"Why should I do 0.3.0?" and "What does p95 mean?"**
+p95 is the time 95% of requests were faster than. Line up 100 requests from fastest to slowest, and it's the 95th. It was stuck because my stopwatch only had one mark, at 5ms, and every request finished before it. Smaller buckets are more marks on the stopwatch.
+
+### Things Claude got wrong (and corrected)
+- **"`/healthz` should show about 0.6 requests per second."** The right number is about 0.9: 0.3 per pod × 3 pods. It measured 0.93.
+- **First CPU and memory queries returned nothing.** Claude assumed a `container="app"` label that this setup doesn't have.
+- **A failed alert check** was a bug in Claude's `curl` command, not a cluster problem.
+
+### Things that looked like errors but weren't
+- **`Watchdog` alert firing:** it fires on purpose.
+- **A target showing `unknown`:** it hadn't been scraped yet.
+- **No `code="404"` line on `/metrics`:** a label combination only appears after it first happens.
+- **Charts dropping to zero when test traffic ends:** there's no traffic to measure. The average and p95 panels go empty, because you can't divide by zero requests.
+- **New pod names on the charts after a rollout:** the rollout replaced the pods.
+
+### Ideas to be able to explain in an interview
+- **Client library vs server:** the app publishes numbers; Prometheus collects and stores them (the **pull model**); Grafana draws them.
+- **ServiceMonitor:** tells Prometheus what to scrape. The most common reason a target never appears is a missing `release` label.
+- **Why scrape pods, not the Service:** each pod keeps its own counts, and the Service would hit a random one.
+- **Counter vs histogram:** counter = how many (use `rate()`); histogram = how long, in buckets (use `histogram_quantile()`).
+- **Why p95 over average:** with 95 requests at 1ms and 5 at 500ms, the average is about 26ms, which nobody experienced. Averages hide slow requests.
+- **Percentiles are only as good as the buckets:** my p95 read 4.75ms when real requests took about 0.02ms.
+- **Dashboards as code:** kept in Git, so they're recreated automatically and reviewable.
+- **Secrets stay out of Git:** the Grafana password lives in a Kubernetes Secret.
+
+### Debugging checklist
+```sh
+kubectl get servicemonitors -A --show-labels    # target missing? does it have release=monitoring?
+kubectl -n nhd-demo get svc --show-labels       # does the Service match the selector?
+kubectl -n monitoring get pods                  # is the stack healthy?
+```
+Then check http://localhost:9090/targets: missing means Prometheus was never told about it; DOWN means it tried and failed, and the row shows the error.
+
+### Quick self-test
+1. What's the difference between the Prometheus client library and the Prometheus server?
+2. Your ServiceMonitor applied without errors, but no target appears. What do you check first?
+3. Why does Prometheus scrape each pod directly instead of going through the Service?
+4. Why did p95 read 4.75ms when requests took about 0.02ms?
+5. Why is `/healthz` about 0.9 requests per second?
+6. Where do pod CPU and memory numbers come from, given the app doesn't report them?
+7. Why use `rate()` instead of a counter's raw value?
+8. Why can an average look fine while some users have a bad experience?
+9. How does the dashboard get into Grafana without clicking anything?
+10. Why isn't the Grafana password in this repo, and how do you get it?
 
 ---
