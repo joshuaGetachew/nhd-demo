@@ -632,6 +632,23 @@ Each chart is driven by a question to Prometheus. Claude asked each one and got 
 **"Why should I do 0.3.0?" and "What does p95 mean?"**
 p95 is the time 95% of requests were faster than. Line up 100 requests from fastest to slowest, and it's the 95th. It was stuck because my stopwatch only had one mark, at 5ms, and every request finished before it. Smaller buckets are more marks on the stopwatch.
 
+### Where I got stuck or confused, and how it was resolved
+
+**I asked to add `/metrics`, but it already existed.**
+My request described adding the endpoint and rebuilding the image. We'd already built the endpoint in Step 2, so there was nothing to add. We checked it was working and skipped the rebuild, because a new version number with no code change would make the version history misleading. My request also called this Step 4, but in these notes it's Steps 5 and 6.
+
+**I thought Prometheus was already set up.**
+Seeing "Prometheus" on `/metrics` made it sound installed. Only the client library was. Nothing was collecting the numbers until we installed the server.
+
+**"You should see everything up and nothing for nhd-demo" didn't make sense to me.**
+It meant every entry on the Targets page should say UP, and my app shouldn't be listed at all yet, not even as DOWN. My app was fine. Prometheus just hadn't been told about it.
+
+**"Say go when you've had a look" at what?**
+The instruction was too vague. It meant the Prometheus checks from the message before. Those checks were optional, and "go" just meant I was ready for the next step.
+
+**I wasn't sure why I should bother with 0.3.0.**
+My p95 chart couldn't tell me anything, because it read 4.75ms whatever the real speed. Simply put: a stopwatch with one mark at 5 seconds can't tell a 1-second runner from a 4-second one. So I did the rebuild I'd earlier skipped, because this time there was a real code change to ship.
+
 ### Things Claude got wrong (and corrected)
 - **"`/healthz` should show about 0.6 requests per second."** The right number is about 0.9: 0.3 per pod × 3 pods. It measured 0.93.
 - **First CPU and memory queries returned nothing.** Claude assumed a `container="app"` label that this setup doesn't have.
