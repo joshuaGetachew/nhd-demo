@@ -23,7 +23,7 @@ spec:
         runAsGroup: 65532
       containers:
         - name: app
-          image: nhd-demo:0.2.0
+          image: nhd-demo:0.3.0
           # Built locally into Rancher Desktop's moby engine, so never pull from a registry.
           imagePullPolicy: Never
           ports:

@@ -27,9 +27,14 @@ var (
 	)
 	requestDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "http_request_duration_seconds",
-			Help:    "HTTP request latency in seconds, by path.",
-			Buckets: prometheus.DefBuckets,
+			Name: "http_request_duration_seconds",
+			Help: "HTTP request latency in seconds, by path.",
+			// Requests take microseconds, so start well below DefBuckets' 5ms.
+			// Otherwise every request lands in the first bucket and p95 means nothing.
+			Buckets: []float64{
+				0.00001, 0.000025, 0.00005, 0.0001, 0.00025, 0.0005,
+				0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10,
+			},
 		},
 		[]string{"path"},
 	)

@@ -42,6 +42,7 @@ func TestEndpoints(t *testing.T) {
 		`http_requests_total{code="200",path="/healthz"} 1`,
 		`http_requests_total{code="404",path="/"} 1`,
 		`http_request_duration_seconds_count{path="/"} 2`,
+		`http_request_duration_seconds_bucket{path="/",le="1e-05"}`,
 		`go_goroutines`,
 	} {
 		if !strings.Contains(body, want) {
